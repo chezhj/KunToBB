@@ -3,6 +3,7 @@
 import datetime
 from dateutil import tz
 from mysql.connector import connect, Error
+from slugify import slugify
 
 ##Some setup needs to come here
 
@@ -31,5 +32,6 @@ with connection.cursor() as cursor:
         date = date.replace(tzinfo=tz.tzlocal())
         utc_time = date.astimezone(tz.tzutc())
         print(utc_time)
+        print(slugify(topic[1]))
 
 connection.close()
