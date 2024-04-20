@@ -1,20 +1,43 @@
 """Script to port kunena 5 to bbpress"""
 
+import configparser
 import datetime
+import sys
+
 from dateutil import tz
-from mysql.connector import connect, Error
+from mysql.connector import Error, connect
 from slugify import slugify
 
 ##Some setup needs to come here
 
+
+##import MySQLdb.cursors
+
+config = configparser.ConfigParser()
+config.read("config.ini")
+
+
+##def connect():
+##    return MySQLdb.connect(host = config['mysqlDB']['host'],
+##                           user = config['mysqlDB']['user'],
+##                           passwd = config['mysqlDB']['pass'],
+##                           db = config['mysqlDB']['db'])
+
 try:
+    ##connection = connect(
+    ##    host="87.236.98.81", password="2548tk", user="picknl", database="picknl"
+    ##)
     connection = connect(
-        host="87.236.98.81", password="2548tk", user="picknl", database="picknl"
+        host=config["sourceDB"]["host"],
+        password=config["sourceDB"]["pass"],
+        user=config["sourceDB"]["user"],
+        database=config["sourceDB"]["db"],
     )
+
     print(connection)
 except Error as e:
     print(e)
-    exit()
+    sys.exit()
 
 
 SELECT_QUERY = """
