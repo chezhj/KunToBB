@@ -8,10 +8,10 @@ import logging
 from mysql.connector import connect
 import progressbar
 
-from converters import ReplyConvertor, TopicConvertor
+from converters import CategoryConvertor, ReplyConvertor, TopicConvertor
 
 
-DRY_RUN = False
+DRY_RUN = True
 
 
 class MyDB(object):
@@ -56,6 +56,7 @@ class MyDB(object):
 def set_last_post_info(temp_dict, post_id, last_active_time):
     temp_dict["_bbp_last_reply_id"] = post_id
     temp_dict["_bbp_last_active_time"] = last_active_time
+    # need to save topic_id to fill forum meta at the end
 
 
 class KunenaData(object):
@@ -66,9 +67,11 @@ class KunenaData(object):
         self.db = db
         self.topics = None
         self.replies = None
+        self.categories = None
         self.topic_table = prefix + "_kunena_topics"
         self.mesages_table = prefix + "_kunena_messages"
         self.mesages_text_table = prefix + "_kunena_messages_text"
+        self.categories_table = prefix + "_kunena_categories"
 
     def get_topics(self, category_id):
         select_topics_sql = f"""
@@ -90,6 +93,17 @@ class KunenaData(object):
         """
         self.db.query(select_reply_sql, (topic_id,))
         self.replies = self.db.fetchall()
+
+    def get_categories(self, parent_id):
+        select_category_sql = f"""
+        SELECT * 
+        FROM {self.categories_table}
+        where parent_id={parent_id}
+        and locked <> 1 
+        order by ordering
+        """
+        self.db.query(select_category_sql, None)
+        self.categories = self.db.fetchall()
 
 
 class BbpressData(object):
@@ -117,7 +131,72 @@ class BbpressData(object):
         INSERT INTO {self.post_meta_table}
         (post_id, meta_key, meta_value)
         VALUES (%s,%s,%s)
+
         """
+
+    def insert_forum(self, c: CategoryConvertor):
+
+        value = (
+            c.get_post_author(),
+            c.get_post_date_fmt(),
+            c.get_post_date_gmt_fmt(),
+            c.get_post_content(),
+            c.get_post_title(),
+            c.get_post_status(),
+            c.get_comment_status(),
+            c.get_ping_status(),
+            c.get_post_name(),
+            c.get_post_modified(),
+            c.get_post_modified_gmt(),
+            c.get_post_parent(),
+            "",
+            c.get_menu_order(),
+            c.get_post_type(),
+            c.get_comment_count(),
+        )
+        self.db.execute(self.get_post_sql(), value)
+
+        forum_id = self.db.get_lastid()
+
+        update_sql = f"""
+        UPDATE {self.posts_table}
+        set guid=%s 
+        WHERE id=%s
+        """
+        self.db.execute(update_sql, (c.get_guid(forum_id), forum_id))
+        logging.debug("reply url %s", c.get_guid(forum_id))
+
+        meta_values = []
+        meta_values.append((forum_id, "_edit_lock", ""))
+        meta_values.append((forum_id, "_edit_last", c.get_post_date_fmt()))
+        meta_values.append((forum_id, "_bbp_forum_subforum_count", 0))
+        meta_values.append((forum_id, "_fusion", c.get_fusion_meta()))
+
+        meta_values.append((forum_id, "_bbp_total_reply_count_hidden", 0))
+        meta_values.append((forum_id, "_bbp_status", "open"))
+        meta_values.append((forum_id, "_bbp_forum_type", "forum"))
+        meta_values.append((forum_id, "_yoast_wpseo_estimated-reading-time-minutes", 0))
+        meta_values.append((forum_id, "_yoast_wpseo_wordproof_timestamp", ""))
+        meta_values.append((forum_id, "avada_post_views_count", 1))
+        meta_values.append((forum_id, "avada_today_post_views_count", 1))
+        meta_values.append(
+            (
+                forum_id,
+                "avada_post_views_count_today_date",
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        )
+        meta_values.append((forum_id, "_bbp_forum_id", c.get_post_parent()))
+
+        meta_values.append((forum_id, "_bbp_topic_count", 0))
+        meta_values.append((forum_id, "_bbp_total_topic_count", 0))
+        meta_values.append((forum_id, "_bbp_topic_count_hidden", 0))
+        meta_values.append((forum_id, "_bbp_reply_count", 0))
+        meta_values.append((forum_id, "_bbp_total_reply_count", 0))
+
+        self.db.execute_many(self.get_meta_sql(), meta_values)
+
+        return forum_id
 
     def insert_topic(self, c: TopicConvertor):
 
@@ -226,6 +305,7 @@ class BbpressData(object):
 
         set_last_post_info(kun_bbp_ids, reply_id, r.get_post_date_fmt())
         logging.debug("last_post_date = %s", kun_bbp_ids["_bbp_last_active_time"])
+        return reply_id
 
     def add_topic_meta(self, topic_id, meta_dict):
         meta_values = []
@@ -242,6 +322,23 @@ class BbpressData(object):
             (topic_id, "_bbp_last_active_time", meta_dict["_bbp_last_active_time"])
         )
 
+        self.db.execute_many(self.get_meta_sql(), meta_values)
+
+    def add_forum_meta(self, forum_id, meta_dict):
+
+        meta_values = []
+        meta_values.append(
+            (forum_id, "_bbp_last_topic_id", meta_dict["conversion_last_topic_id"])
+        )
+        meta_values.append(
+            (forum_id, "_bbp_last_reply_id", meta_dict["_bbp_last_reply_id"])
+        )
+        meta_values.append(
+            (forum_id, "_bbp_last_active_id", meta_dict["_bbp_last_reply_id"])
+        )
+        meta_values.append(
+            (forum_id, "_bbp_last_active_time", meta_dict["_bbp_last_active_time"])
+        )
         self.db.execute_many(self.get_meta_sql(), meta_values)
 
 
@@ -276,7 +373,7 @@ class ConvertController(object):
             self.bbpress_db.rollback()
         else:
             self.bbpress_db.commit()
-            logging.info("Will commit in future")
+            # logging.info("Will commit in future")
 
     def load_topics(self, catid):
         self.kunena_data.get_topics(catid)
@@ -295,20 +392,23 @@ class ConvertController(object):
 
         # Get Categories
         # need to change into query
-        categories = [
-            10,
-        ]
+        self.kunena_data.get_categories(self.config.getint("category", "parent_id"))
 
-        for cat in categories:
-            print(f"Found {len(categories)} category(ies) to import")
-            self.load_topics(cat)
+        for cat in self.kunena_data.categories:
+            print(f"Found {len(self.kunena_data.categories)} category(ies) to import")
+            converted_categeory = CategoryConvertor(cat, self.config)
+
+            forum_id = self.bbpress_data.insert_forum(converted_categeory)
+
+            self.load_topics(converted_categeory.get_id())
+
             progress_bar = progressbar.ProgressBar(
                 max_value=len(self.kunena_data.topics), redirect_stdout=True
             )
 
             for kun_topic in self.kunena_data.topics:
                 kun_bbp_ids = {}
-                converter = TopicConvertor(kun_topic, self.config)
+                converter = TopicConvertor(kun_topic, self.config, forum_id)
                 logging.debug(converter.get_post_date())
                 logging.debug(converter.get_guid())
                 self.kunena_data.get_replies(converter.get_id())
@@ -316,11 +416,9 @@ class ConvertController(object):
                 bbp_topic_id = self.bbpress_data.insert_topic(converter)
                 logging.debug("id of new inserted topic %d", bbp_topic_id)
 
-                kun_bbp_ids[converter.get_kun_first_post_id] = bbp_topic_id
+                kun_bbp_ids[converter.get_kun_first_post_id()] = bbp_topic_id
                 set_last_post_info(kun_bbp_ids, 0, converter.get_post_date_fmt())
-                logging.debug(
-                    "last_post_date = %s", kun_bbp_ids["_bbp_last_active_time"]
-                )
+                kun_bbp_ids["conversion_last_topic_id"] = bbp_topic_id
 
                 for idx, kun_reply in enumerate(self.kunena_data.replies):
                     reply_conv = ReplyConvertor(
@@ -338,6 +436,7 @@ class ConvertController(object):
                 self.persist()
                 progress_bar.next()
             progress_bar.finish()
+            self.bbpress_data.add_forum_meta(forum_id, kun_bbp_ids)
 
 
 def import_controller():
@@ -346,7 +445,7 @@ def import_controller():
     logging.basicConfig(
         format="%(asctime)s %(levelname)s - %(message)s",
         datefmt="%I:%M:%S",
-        level=logging.DEBUG,
+        level=logging.INFO,
     )
     controller = ConvertController()
 
