@@ -5,7 +5,9 @@ import configparser
 from datetime import datetime
 import logging
 
-from mysql.connector import connect
+import mysql.connector
+
+
 import progressbar
 
 from converters import CategoryConvertor, ReplyConvertor, TopicConvertor
@@ -18,9 +20,25 @@ class MyDB(object):
     """Default database object to reuse connection and cursors"""
 
     def __init__(self, host, user, password, db):
-        self._db_connection = connect(host=host, user=user, password=password, db=db)
-        self._db_cur = self._db_connection.cursor(dictionary=True)
-        self._db_insert_cur = self._db_connection.cursor()
+        try:
+            self._db_connection = mysql.connector.connect(
+                host=host, user=user, password=password, db=db
+            )
+            self._db_cur = self._db_connection.cursor(dictionary=True)
+            self._db_insert_cur = self._db_connection.cursor()
+        except mysql.connector.Error as e:
+            logging.error(e)
+            self._db_connection = None
+            self._db_cur = None
+            self._db_insert_cur = None
+
+    def connected(self):
+        if self._db_connection:
+            self.query("SELECT VERSION()", None)
+            result = self.fetchall()
+            return result is not None
+
+        return False
 
     def query(self, query, params):
         return self._db_cur.execute(query, params)
@@ -34,6 +52,9 @@ class MyDB(object):
     def fetchall(self):
         return self._db_cur.fetchall()
 
+    def fetchone(self):
+        return self._db_cur.fetchone()
+
     def get_lastid(self):
         return self._db_insert_cur.lastrowid
 
@@ -44,7 +65,8 @@ class MyDB(object):
         return self._db_connection.commit()
 
     def __del__(self):
-        self._db_connection.close()
+        if self._db_connection:
+            self._db_connection.close()
 
 
 # menu_order=0
@@ -105,6 +127,43 @@ class KunenaData(object):
         self.db.query(select_category_sql, None)
         self.categories = self.db.fetchall()
 
+    def check_tables(self):
+        # select tables and check if the tables exist
+        # SELECT * FROM information_schema.tables
+        # WHERE table_name = self.topic_table
+        # WHERE table_name = self.mesages_table
+        # WHERE table_name = self.mesages_text_table
+        # WHERE table_name = self.categories_table
+        check_table_sql = f"""
+        select * FROM information_schema.tables
+        where table_name IN ('{self.topic_table}', '{self.mesages_table}', '{self.mesages_text_table}', '{self.categories_table}')
+        """
+        self.db.query(check_table_sql, None)
+        return self.db.fetchall()
+
+    def get_nof_categories(self, parent_id):
+        select_category_sql = f"""
+        SELECT count(*) as nof_categories
+        FROM {self.categories_table}
+        where parent_id={parent_id}
+        and locked <> 1 
+        """
+        self.db.query(select_category_sql, None)
+        return self.db.fetchone()
+
+    def get_nof_topics(self, parent_id):
+        select_topic_sql = f"""
+        SELECT categorie.name, count(topic.id) as nof_topics
+        FROM {self.topic_table} as topic,
+        {self.categories_table} as categorie
+        where categorie.id=topic.category_id
+        and categorie.parent_id={parent_id}
+        and categorie.locked <> 1
+        group by categorie.name
+        """
+        self.db.query(select_topic_sql, None)
+        return self.db.fetchall()
+
 
 class BbpressData(object):
     """Class that handles the export/insert into the new database"""
@@ -115,6 +174,7 @@ class BbpressData(object):
         self.topics = None
         self.posts_table = prefix + "_posts"
         self.post_meta_table = prefix + "_postmeta"
+        self.users_table = prefix + "_users"
 
     def get_post_sql(self):
         return f"""
@@ -341,6 +401,33 @@ class BbpressData(object):
         )
         self.db.execute_many(self.get_meta_sql(), meta_values)
 
+    def check_tables(self):
+        check_table_sql = f"""
+        select * FROM information_schema.tables
+        where table_name IN ('{self.post_meta_table}', '{self.posts_table}')
+        """
+        self.db.query(check_table_sql, None)
+        return self.db.fetchall()
+
+    def get_forum(self, forum_id):
+        forum_sql = f"""
+        SELECT id,post_title 
+        FROM {self.posts_table}
+        WHERE id=%s
+        and post_type='forum'
+        """
+        self.db.query(forum_sql, (forum_id,))
+        return self.db.fetchone()
+
+    def check_users(self, import_user_id, admin_user_id):
+        check_users_sql = f"""
+        SELECT id, user_nicename 
+        FROM {self.users_table}
+        WHERE id=%s or id=%s    
+        """
+        self.db.query(check_users_sql, (import_user_id, admin_user_id))
+        return self.db.fetchall()
+
 
 class ConvertController(object):
     """Controlling the conversion"""
@@ -386,6 +473,100 @@ class ConvertController(object):
             self.bbpress_db, self.config.get("targetDB", "prefix")
         )
 
+    def ask_yes_no_question(self):
+        response = input("Do you want to start the migration? (yes/no) ")
+        while response.lower() not in ["yes", "no"]:
+            print("Please enter 'yes' or 'no'.")
+            response = input("Do you want to start the migration? (yes/no) ")
+        return response.lower() == "yes"
+
+    def verify(self):
+        # Check source connection
+        self.connect_datases()
+        if not self.kunena_db.connected:
+            print("Source databases not connected, exiting")
+            return False
+        print("Kunena database connected")
+
+        # check target connections
+        if not self.bbpress_db.connected:
+            print("Target (bbpress) database not connected, exiting")
+            return False
+        print("Target (bbpress) database connected")
+
+        self.create_data_objects()
+
+        # check source table
+        tables = self.kunena_data.check_tables()
+        if len(tables) == 0:
+            print("Source tables not found, wrong SourceDB prefix? Exiting....")
+            return False
+        print("Source tables found")
+
+        # check target tables
+        tables = self.bbpress_data.check_tables()
+        if len(tables) == 0:
+            print("Target tables not found, wrong TargetDB prefix? Exiting....")
+            return False
+        print("Target tables found")
+
+        # check nof categories for parent  id
+        parent_id = self.config.getint("category", "parent_id")
+        nof_categories = self.kunena_data.get_nof_categories(parent_id)
+        if nof_categories["nof_categories"] == 0:
+            print("No categories found for parent id, exiting...")
+            return False
+        print(
+            f"Found {nof_categories['nof_categories']} categorie(s) for parent id {parent_id}"
+        )
+
+        # check nof topics
+        topiccount = self.kunena_data.get_nof_topics(parent_id)
+        for category in topiccount:
+            print(
+                f"Found {category['nof_topics']} topic(s) in category \"{category['name']}\""
+            )
+
+        # check parent forum
+        forum = self.bbpress_data.get_forum(
+            self.config.getint("category", "main_forum")
+        )
+        if forum is None:
+            print("Parent forum not found, exiting...")
+            return False
+        print(
+            f"Parent forum found with id \"{forum['id']}\" and name \"{forum['post_title']}\""
+        )
+
+        # check users exits
+        import_user = self.config.getint("settings", "import_user_id")
+        admin_user = self.config.getint("settings", "admin_user_id")
+        users = self.bbpress_data.check_users(import_user, admin_user)
+        for user in users:
+            user_txt = "import user"
+            if user["id"] == admin_user:
+                user_txt = "ADMIN USER"
+            print(
+                f'Found {user_txt} with id "{user["id"]}" and name "{user["user_nicename"]}"'
+            )
+
+        if len(users) != 2:
+            print("Import user and admin user not found, exiting...")
+            return False
+        print("Import user and admin user found")
+
+        # check if script runs in DRY_RUN mode
+        if DRY_RUN:
+            print("Running in DRY_RUN mode, changes will be rolled back.")
+            print(
+                "Note that numbers used for auto increment fields (id's) will be consumed."
+            )
+        else:
+            print("Running in LIVE mode, changes will be committed.")
+
+        # Get conformation,user inputs yes, from commandline then continu
+        return self.ask_yes_no_question()
+
     def start_conversion(self):
         self.connect_datases()
         self.create_data_objects()
@@ -393,9 +574,9 @@ class ConvertController(object):
         # Get Categories
         # need to change into query
         self.kunena_data.get_categories(self.config.getint("category", "parent_id"))
-
+        print(f"Found {len(self.kunena_data.categories)} category(ies) to import")
         for cat in self.kunena_data.categories:
-            print(f"Found {len(self.kunena_data.categories)} category(ies) to import")
+            print(f"Starting import of {cat['name']}")
             converted_categeory = CategoryConvertor(cat, self.config)
 
             forum_id = self.bbpress_data.insert_forum(converted_categeory)
@@ -449,10 +630,9 @@ def import_controller():
     )
     controller = ConvertController()
 
-    # controller.verify
-    controller.start_conversion()
+    if controller.verify():
+        controller.start_conversion()
 
 
 if __name__ == "__main__":
     import_controller()
-    # start_load()

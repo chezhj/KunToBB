@@ -85,7 +85,7 @@ class TopicConvertor:
 
     def get_guid(self):
         base = self.conf.get("settings", "baseURL")
-        if not (base.endswith("/")):
+        if not base.endswith("/"):
             base = base + "/"
         return base + "topic/" + self.get_post_name()
 
@@ -240,7 +240,7 @@ class CategoryConvertor:
     def get_guid(self, forum_id):
         # post_type=forum&#038;p=(post-id)
         base = self.conf.get("settings", "baseURL")
-        if not (base.endswith("/")):
+        if not base.endswith("/"):
             base = base + "/"
         return base + f"post_type=forum&#38;p={forum_id}"
 
