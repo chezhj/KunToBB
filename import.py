@@ -16,7 +16,7 @@ from converters import CategoryConvertor, ReplyConvertor, TopicConvertor
 DRY_RUN = True
 
 
-class MyDB(object):
+class MyDB:
     """Default database object to reuse connection and cursors"""
 
     def __init__(self, host, user, password, db):
@@ -81,9 +81,10 @@ def set_last_post_info(temp_dict, post_id, last_active_time):
     # need to save topic_id to fill forum meta at the end
 
 
-class KunenaData(object):
+class KunenaData:
     """Class that handles the data we import/read from Kunena database"""
 
+    # pylint: disable=too-many-instance-attributes
     def __init__(self, db, prefix) -> None:
         self.topic = None
         self.db = db
@@ -165,7 +166,7 @@ class KunenaData(object):
         return self.db.fetchall()
 
 
-class BbpressData(object):
+class BbpressData:
     """Class that handles the export/insert into the new database"""
 
     def __init__(self, db, prefix) -> None:
@@ -429,7 +430,7 @@ class BbpressData(object):
         return self.db.fetchall()
 
 
-class ConvertController(object):
+class ConvertController:
     """Controlling the conversion"""
 
     def __init__(self):
