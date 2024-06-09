@@ -12,8 +12,8 @@ import progressbar
 
 from converters import CategoryConvertor, ReplyConvertor, TopicConvertor
 
-
-DRY_RUN = False
+# Set this to False if you are sure and want to commit!
+DRY_RUN = True
 
 
 class MyDB:
