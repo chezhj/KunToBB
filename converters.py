@@ -1,10 +1,31 @@
+"""
+Coverter module
+"""
+
 # pylint: disable=missing-function-docstring
 import datetime
+import re
 
 # from datetime import datetime
 
 from dateutil import tz
 from slugify import slugify
+
+
+def tag2html(string):
+    # [b]=> <b>
+    # [center] => <center>
+    # u]=><u>
+    # [i]=><i>
+    string = string.replace("[b]", "<b>").replace("[/b]", "</b>")
+    string = string.replace("[center]", "<center>").replace("[/center]", "</center>")
+    string = string.replace("[u]", "<u>").replace("[/u]", "</u>")
+    string = string.replace("[i]", "<i>").replace("[/i]", "</i>")
+    # find [color=] => <font color=
+    if re.search(r"\[color=\#([0-9a-fA-F]{6})\]", string) is not None:
+        string = re.sub(r"\[color=\#([0-9a-fA-F]{6})\]", r"<font color=#\1>", string)
+        string = string.replace("[/color]", "</font>")
+    return string
 
 
 class TopicConvertor:
@@ -29,7 +50,7 @@ class TopicConvertor:
         return date.astimezone(tz.tzutc()).strftime("%Y-%m-%d %H:%M:%S")
 
     def get_post_content(self):
-        return self.row["first_post_message"]
+        return tag2html(self.row["first_post_message"])
 
     def get_post_title(self) -> str:
         return self.row["subject"]
@@ -114,7 +135,7 @@ class ReplyConvertor:
         return date.astimezone(tz.tzutc()).strftime("%Y-%m-%d %H:%M:%S")
 
     def get_post_content(self):
-        return self.row["message"]
+        return tag2html(self.row["message"])
 
     def get_post_title(self):
         return self.row["subject"]
@@ -167,7 +188,7 @@ class ReplyConvertor:
 
     def get_guid(self, new_name):
         base = self.conf.get("settings", "baseURL")
-        if not (base.endswith("/")):
+        if not base.endswith("/"):
             base = base + "/"
         return base + "reply/" + str(new_name)
 
@@ -175,7 +196,28 @@ class ReplyConvertor:
 class CategoryConvertor:
     """Converts kunena Category row result from query into field needed for bbpress"""
 
-    FUSION_META = """a:18:{s:25:"show_first_featured_image";s:3:"yes";s:4:"fimg";a:2:{s:5:"width";s:0:"";s:6:"height";s:0:"";}s:17:"post_links_target";s:2:"no";s:7:"bg_full";s:2:"no";s:17:"slider_visibility";s:51:"small-visibility,medium-visibility,large-visibility";s:14:"blog_width_100";s:3:"yes";s:12:"main_padding";a:2:{s:3:"top";s:0:"";s:6:"bottom";s:0:"";}s:15:"content_bg_full";s:2:"no";s:20:"image_rollover_icons";s:7:"default";s:9:"bg_repeat";s:7:"default";s:35:"container_hundred_percent_animation";s:0:"";s:11:"slider_type";s:2:"no";s:9:"wooslider";s:1:"0";s:14:"page_title_bar";s:7:"default";s:17:"content_bg_repeat";s:7:"default";s:15:"ppbress_sidebar";s:15:"default_sidebar";s:17:"ppbress_sidebar_2";s:15:"default_sidebar";s:14:"sidebar_sticky";s:7:"default";}"""
+    FUSION_META = """\
+    a:18:{\
+        s:25:"show_first_featured_image";s:3:"yes";\
+        s:4:"fimg";a:2:{s:5:"width";s:0:"";s:6:"height";s:0:"";}\
+        s:17:"post_links_target";s:2:"no";\
+        s:7:"bg_full";s:2:"no";\
+        s:17:"slider_visibility";s:51:"small-visibility,medium-visibility,large-visibility";\
+        s:14:"blog_width_100";s:3:"yes";\
+        s:12:"main_padding";a:2:{s:3:"top";s:0:"";s:6:"bottom";s:0:"";}\
+        s:15:"content_bg_full";s:2:"no";\
+        s:20:"image_rollover_icons";s:7:"default";\
+        s:9:"bg_repeat";s:7:"default";\
+        s:35:"container_hundred_percent_animation";s:0:"";\
+        s:11:"slider_type";s:2:"no";\
+        s:9:"wooslider";s:1:"0";\
+        s:14:"page_title_bar";s:7:"default";\
+        s:17:"content_bg_repeat";s:7:"default";\
+        s:15:"ppbress_sidebar";s:15:"default_sidebar";\
+        s:17:"ppbress_sidebar_2";s:15:"default_sidebar";\
+        s:14:"sidebar_sticky";s:7:"default"\
+    }\
+    """
 
     def __init__(self, query_row, conf):
         self.row = query_row

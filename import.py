@@ -13,7 +13,7 @@ import progressbar
 from converters import CategoryConvertor, ReplyConvertor, TopicConvertor
 
 
-DRY_RUN = True
+DRY_RUN = False
 
 
 class MyDB:
